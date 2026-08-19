@@ -25,22 +25,44 @@ $packageName = 'com.banupham.virtualizationtest'
 function Invoke-AdbCapture {
     param([string[]]$Arguments)
 
-    $oldPreference = $ErrorActionPreference
+    # Windows PowerShell 5.1 converts native stderr into NativeCommandError
+    # records when using 2>&1. Start-Process redirection keeps adb stderr as
+    # plain text so expected install failures can be handled without noisy
+    # PowerShell error metadata.
+    $stdoutFile = [IO.Path]::GetTempFileName()
+    $stderrFile = [IO.Path]::GetTempFileName()
+
     try {
-        # Windows PowerShell 5.1 can turn native stderr into a terminating
-        # NativeCommandError when ErrorActionPreference=Stop. Capture it so
-        # expected adb failures can be inspected and handled explicitly.
-        $ErrorActionPreference = 'Continue'
-        $text = (& $script:adb @Arguments 2>&1 | Out-String)
-        $exitCode = $LASTEXITCODE
+        $processArgs = @(
+            foreach ($arg in $Arguments) {
+                if ($arg -match '[\s"]') {
+                    '"' + ($arg -replace '"', '\"') + '"'
+                } else {
+                    $arg
+                }
+            }
+        )
+
+        $process = Start-Process -FilePath $script:adb `
+            -ArgumentList $processArgs `
+            -Wait -PassThru -NoNewWindow `
+            -RedirectStandardOutput $stdoutFile `
+            -RedirectStandardError $stderrFile
+
+        $stdout = [IO.File]::ReadAllText($stdoutFile)
+        $stderr = [IO.File]::ReadAllText($stderrFile)
+        $parts = @()
+        if (-not [string]::IsNullOrWhiteSpace($stdout)) { $parts += $stdout.TrimEnd() }
+        if (-not [string]::IsNullOrWhiteSpace($stderr)) { $parts += $stderr.TrimEnd() }
+        $text = $parts -join [Environment]::NewLine
+
+        [pscustomobject]@{
+            Output = $text
+            ExitCode = $process.ExitCode
+        }
     }
     finally {
-        $ErrorActionPreference = $oldPreference
-    }
-
-    [pscustomobject]@{
-        Output = $text
-        ExitCode = $exitCode
+        Remove-Item $stdoutFile, $stderrFile -Force -ErrorAction SilentlyContinue
     }
 }
 
