@@ -20,6 +20,29 @@ if (-not $env:ANDROID_HOME) {
 
 $adb = Join-Path $env:ANDROID_HOME 'platform-tools\adb.exe'
 $emu = Join-Path $env:ANDROID_HOME 'emulator\emulator.exe'
+$packageName = 'com.banupham.virtualizationtest'
+
+function Invoke-AdbCapture {
+    param([string[]]$Arguments)
+
+    $oldPreference = $ErrorActionPreference
+    try {
+        # Windows PowerShell 5.1 can turn native stderr into a terminating
+        # NativeCommandError when ErrorActionPreference=Stop. Capture it so
+        # expected adb failures can be inspected and handled explicitly.
+        $ErrorActionPreference = 'Continue'
+        $text = (& $script:adb @Arguments 2>&1 | Out-String)
+        $exitCode = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $oldPreference
+    }
+
+    [pscustomobject]@{
+        Output = $text
+        ExitCode = $exitCode
+    }
+}
 
 Write-Host "===== ANDROID VM APK TEST ====="
 Write-Host "ANDROID_HOME=$env:ANDROID_HOME"
@@ -108,20 +131,40 @@ Write-Host "ABI=$abi"
 if ($qemu -ne '1') { Fail 'Connected Android target is not reporting QEMU.' }
 
 Write-Host "===== [4] INSTALL APK ====="
-$install = (& $adb -s $serial install -r $Apk 2>&1 | Out-String)
+$installResult = Invoke-AdbCapture @('-s', $serial, 'install', '-r', $Apk)
+$install = $installResult.Output
 Write-Host $install.Trim()
-if ($LASTEXITCODE -ne 0 -or $install -notmatch '(?m)^Success\s*$') {
+
+if ($installResult.ExitCode -ne 0 -or $install -notmatch '(?m)^Success\s*$') {
+    if ($install -match 'INSTALL_FAILED_UPDATE_INCOMPATIBLE|signatures do not match') {
+        Write-Host 'Detected debug-signature mismatch from a previous build.'
+        Write-Host "Uninstalling old test package: $packageName"
+
+        $uninstallResult = Invoke-AdbCapture @('-s', $serial, 'uninstall', $packageName)
+        Write-Host $uninstallResult.Output.Trim()
+        if ($uninstallResult.ExitCode -ne 0 -or $uninstallResult.Output -notmatch '(?m)^Success\s*$') {
+            Fail 'Old package could not be removed after signature mismatch.'
+        }
+
+        Write-Host 'Retrying clean APK install.'
+        $installResult = Invoke-AdbCapture @('-s', $serial, 'install', $Apk)
+        $install = $installResult.Output
+        Write-Host $install.Trim()
+    }
+}
+
+if ($installResult.ExitCode -ne 0 -or $install -notmatch '(?m)^Success\s*$') {
     Fail 'APK installation failed.'
 }
 
 Write-Host "===== [5] LAUNCH APP ====="
-$launch = (& $adb -s $serial shell am start -W -n 'com.banupham.virtualizationtest/.MainActivity' 2>&1 | Out-String)
+$launch = (& $adb -s $serial shell am start -W -n "$packageName/.MainActivity" 2>&1 | Out-String)
 Write-Host $launch.Trim()
 if ($LASTEXITCODE -ne 0 -or $launch -match 'Error:|Exception') {
     Fail 'Application launch failed.'
 }
 
-$packagePath = (& $adb -s $serial shell pm path com.banupham.virtualizationtest 2>&1 | Out-String).Trim()
+$packagePath = (& $adb -s $serial shell pm path $packageName 2>&1 | Out-String).Trim()
 if ($packagePath -notmatch '^package:') { Fail 'Package verification failed after launch.' }
 
 $totalTime = [regex]::Match($launch, '(?m)^TotalTime:\s*(\d+)').Groups[1].Value
