@@ -9,8 +9,10 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-$apkUrl = "https://github.com/$Repo/releases/download/latest-test/app-debug.apk"
-$testUrl = "https://raw.githubusercontent.com/$Repo/main/test-apk.ps1"
+$cacheBust = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+$apkUrl = "https://github.com/$Repo/releases/download/latest-test/app-debug.apk?v=$cacheBust"
+$testUrl = "https://raw.githubusercontent.com/$Repo/main/test-apk.ps1?v=$cacheBust"
+$headers = @{ 'Cache-Control' = 'no-cache'; 'Pragma' = 'no-cache' }
 
 Write-Host "===== LATEST APK -> VM TEST ====="
 Write-Host "REPO=$Repo"
@@ -19,15 +21,21 @@ Write-Host "APK=$Apk"
 Write-Host "TEST_SCRIPT=$TestScript"
 
 Write-Host "===== [1] DOWNLOAD LATEST APK ====="
-Invoke-WebRequest -Uri $apkUrl -OutFile $Apk -UseBasicParsing
+Invoke-WebRequest -Uri $apkUrl -Headers $headers -OutFile $Apk -UseBasicParsing
 $apkFile = Get-Item $Apk
 $apkHash = (Get-FileHash $Apk -Algorithm SHA256).Hash
 Write-Host "APK_BYTES=$($apkFile.Length)"
 Write-Host "APK_SHA256=$apkHash"
 
 Write-Host "===== [2] REFRESH TEST SCRIPT ====="
-Invoke-WebRequest -Uri $testUrl -OutFile $TestScript -UseBasicParsing
+Invoke-WebRequest -Uri $testUrl -Headers $headers -OutFile $TestScript -UseBasicParsing
 Unblock-File $TestScript
+
+$testText = Get-Content $TestScript -Raw
+if ($testText -notmatch 'Invoke-AdbCapture' -or $testText -notmatch 'INSTALL_FAILED_UPDATE_INCOMPATIBLE') {
+    throw 'Downloaded test-apk.ps1 is stale or incomplete; expected signature-mismatch recovery code was not found.'
+}
+Write-Host 'TEST_SCRIPT_VERSION=SIGNATURE_RECOVERY_V2'
 
 Write-Host "===== [3] RUN VM TEST ====="
 $argsForTest = @{
