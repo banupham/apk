@@ -32,10 +32,12 @@ Invoke-WebRequest -Uri $testUrl -Headers $headers -OutFile $TestScript -UseBasic
 Unblock-File $TestScript
 
 $testText = Get-Content $TestScript -Raw
-if ($testText -notmatch 'Invoke-AdbCapture' -or $testText -notmatch 'INSTALL_FAILED_UPDATE_INCOMPATIBLE') {
-    throw 'Downloaded test-apk.ps1 is stale or incomplete; expected signature-mismatch recovery code was not found.'
+if ($testText -notmatch 'Invoke-AdbCapture' -or
+    $testText -notmatch 'INSTALL_FAILED_UPDATE_INCOMPATIBLE' -or
+    $testText -notmatch 'RedirectStandardError') {
+    throw 'Downloaded test-apk.ps1 is stale or incomplete; expected clean signature-mismatch recovery code was not found.'
 }
-Write-Host 'TEST_SCRIPT_VERSION=SIGNATURE_RECOVERY_V2'
+Write-Host 'TEST_SCRIPT_VERSION=SIGNATURE_RECOVERY_V3_CLEAN_STDERR'
 
 Write-Host "===== [3] RUN VM TEST ====="
 $argsForTest = @{
