@@ -4,17 +4,57 @@ param(
     [string]$TestScript = "$env:USERPROFILE\Downloads\test-apk.ps1",
     [switch]$ColdBoot,
     [switch]$Headless,
-    [switch]$StopAfter
+    [switch]$StopAfter,
+    [switch]$SkipSelfUpdate
 )
 
 $ErrorActionPreference = 'Stop'
 
 $cacheBust = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
-$apkUrl = "https://github.com/$Repo/releases/download/latest-test/app-debug.apk?v=$cacheBust"
-$testUrl = "https://raw.githubusercontent.com/$Repo/main/test-apk.ps1?v=$cacheBust"
 $headers = @{ 'Cache-Control' = 'no-cache'; 'Pragma' = 'no-cache' }
 
+# Bootstrap into a freshly downloaded copy of this runner. This prevents an
+# old local latest-test.ps1 from continuing to orchestrate newer test scripts.
+if (-not $SkipSelfUpdate) {
+    Write-Host "===== SELF REFRESH ====="
+    $selfUrl = "https://raw.githubusercontent.com/$Repo/main/latest-test.ps1?v=$cacheBust"
+    $tempSelf = Join-Path $env:TEMP ("latest-test-{0}.ps1" -f ([guid]::NewGuid().ToString('N')))
+
+    try {
+        Invoke-WebRequest -Uri $selfUrl -Headers $headers -OutFile $tempSelf -UseBasicParsing
+        Unblock-File $tempSelf
+
+        $selfText = Get-Content $tempSelf -Raw
+        if ($selfText -notmatch 'SELF_REFRESH_V4' -or $selfText -notmatch 'SkipSelfUpdate') {
+            throw 'Downloaded latest-test.ps1 is stale or incomplete; expected self-refresh runner was not found.'
+        }
+
+        Write-Host 'PIPELINE_SCRIPT_VERSION=SELF_REFRESH_V4'
+
+        $selfArgs = @{
+            Repo = $Repo
+            Apk = $Apk
+            TestScript = $TestScript
+            SkipSelfUpdate = $true
+        }
+        if ($ColdBoot) { $selfArgs['ColdBoot'] = $true }
+        if ($Headless) { $selfArgs['Headless'] = $true }
+        if ($StopAfter) { $selfArgs['StopAfter'] = $true }
+
+        & $tempSelf @selfArgs
+        $childExitCode = $LASTEXITCODE
+        exit $childExitCode
+    }
+    finally {
+        Remove-Item $tempSelf -Force -ErrorAction SilentlyContinue
+    }
+}
+
+$apkUrl = "https://github.com/$Repo/releases/download/latest-test/app-debug.apk?v=$cacheBust"
+$testUrl = "https://raw.githubusercontent.com/$Repo/main/test-apk.ps1?v=$cacheBust"
+
 Write-Host "===== LATEST APK -> VM TEST ====="
+Write-Host 'PIPELINE_SCRIPT_VERSION=SELF_REFRESH_V4'
 Write-Host "REPO=$Repo"
 Write-Host "APK_URL=$apkUrl"
 Write-Host "APK=$Apk"
